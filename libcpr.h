@@ -30,10 +30,15 @@
  * repsectively.
  *
  * In the case reflink is not supported, both methods provide the ability to
- * automatically fall back on a read()/write() deep copy. Falling back on deep
- * copy will prevent the caller from finding out what caused the reflink
- * operation to fail. The caller should decide whether they are interested in
- * why reflink failed before blindly requesing the auto-fallback.
+ * automatically fall back on a copy_file_range(2) copy and then on a
+ * read()/write() deep copy. Falling back will prevent the caller from finding
+ * out what caused the reflink operation to fail. The caller should decide
+ * whether they are interested in why reflink failed before blindly requesing
+ * the auto-fallback.
+ *
+ * #qtm_clone_file_ex() and #qtm_clone_file_range_ex() expose the individual
+ * copy tiers (see #qtm_tier_t) so that callers can select which tiers may be
+ * attempted and find out which tier(s) performed the copy.
  *
  * Despite the @c qtm_ prefix on the exported method names, this code is not
  * specific to Quantum file systems and will work on any file system that
@@ -51,17 +56,45 @@ extern "C" {
 /*============================================================================*/
 
 /**
+ * Bitmask of copy tiers. Tiers are always attempted in the order listed here;
+ * a tier that is not in the mask is skipped.
+ *
+ * - #QTM_TIER_CLONE: FICLONE / FICLONERANGE ioctl (reflink, copy-on-write).
+ * - #QTM_TIER_CFR: copy_file_range(2). The kernel copies the data and may
+ *   offload it to the storage or file server. Only works when both files are
+ *   on the same file system instance (EXDEV otherwise since Linux 5.19).
+ * - #QTM_TIER_RW: userspace read(2)/write(2) loop.
+ *
+ * @{
+ */
+
+typedef unsigned int qtm_tier_t;
+
+#define QTM_TIER_NONE  0x00u
+#define QTM_TIER_CLONE 0x01u
+#define QTM_TIER_CFR   0x02u
+#define QTM_TIER_RW    0x04u
+#define QTM_TIER_ALL   (QTM_TIER_CLONE | QTM_TIER_CFR | QTM_TIER_RW)
+
+/** @} */
+
+/*============================================================================*/
+
+/**
  * Attempt to clone the entire file @p src_fd into @p dst_fd, overwriting its
  * contents.
  *
- * This function will invoke the FICLONE ioctl.
+ * This function will invoke the FICLONE ioctl. Equivalent to
+ * #qtm_clone_file_ex() with @c QTM_TIER_ALL if @p fallback_copy is set, or
+ * @c QTM_TIER_CLONE if it is clear.
  *
  * @param[in] src_fd
  *   Source file.
  * @param[in] dst_fd
  *   Destination file.
  * @param[in] fallback_copy
- *   If set, fall back to a deep read()/write() copy if the FICLONE call fails.
+ *   If set, fall back to copy_file_range(2) and then a deep read()/write()
+ *   copy if the FICLONE call fails.
  * @param[in] fallback_copy_block_size
  *   Block size to use if @p fallback_copy is set. Must be larger than zero.
  *   Ignored if @p fallback_copy is clear.
@@ -80,9 +113,9 @@ extern "C" {
  *   - @c ETXTBUSY
  *   - @c EXDEV
  *
- *   If  @p fallback_copy is set then one of the errno values from lseeek(),
- *   read(2) or write(2) may be returned including, but not limited to, the
- *   following:
+ *   If  @p fallback_copy is set then one of the errno values from lseek(),
+ *   copy_file_range(2), read(2) or write(2) may be returned including, but
+ *   not limited to, the following:
  *
  *   - @c EAGAIN or @c EWOULDBLOCK (for non-blocking file descriptors)
  *   - @c EBADF
@@ -111,7 +144,9 @@ int qtm_clone_file (const int    src_fd,
  * Attempt to clone a range from the file @p src_fd into @p dst_fd,
  * overwriting any existing data at that range.
  *
- * This function will invoke the FICLONERANGE ioctl.
+ * This function will invoke the FICLONERANGE ioctl. Equivalent to
+ * #qtm_clone_file_range_ex() with @c QTM_TIER_ALL if @p fallback_copy is set,
+ * or @c QTM_TIER_CLONE if it is clear.
  *
  * @param[in] src_fd
  *   Source file.
@@ -124,7 +159,8 @@ int qtm_clone_file (const int    src_fd,
  * @param[in] length
  *   Number of bytes to clone.
  * @param[in] fallback_copy
- *   If set, fall back to a deep read()/write() copy if the FICLONE call fails.
+ *   If set, fall back to copy_file_range(2) and then a deep read()/write()
+ *   copy if the FICLONERANGE call fails.
  * @param[in] fallback_copy_block_size
  *   Block size to use if @p fallback_copy is set. Must be larger than zero.
  *   Ignored if @p fallback_copy is clear.
@@ -144,8 +180,8 @@ int qtm_clone_file (const int    src_fd,
  *   - @c EXDEV
  *
  *   If  @p fallback_copy is set then one of the errno values from lseek(),
- *   read(2) or write(2) may be returned including, but not limited to, the
- *   following:
+ *   copy_file_range(2), read(2) or write(2) may be returned including, but
+ *   not limited to, the following:
  *
  *   - @c EAGAIN or @c EWOULDBLOCK (for non-blocking file descriptors)
  *   - @c EBADF
@@ -170,6 +206,89 @@ int qtm_clone_file_range (const int    src_fd,
                           const size_t length,
                           const bool   fallback_copy,
                           const size_t fallback_copy_block_size);
+
+/*============================================================================*/
+
+/**
+ * Copy the entire file @p src_fd into @p dst_fd using the first tier in
+ * @p tiers that succeeds.
+ *
+ * A failure of the clone tier always moves on to the next enabled tier. A
+ * copy_file_range(2) failure moves on to the read/write tier only for errors
+ * that mean "not possible here" (EXDEV, EINVAL, ENOSYS, EOPNOTSUPP, EBADF,
+ * EPERM, ETXTBSY); other errors (e.g. ENOSPC, EIO) are returned as-is. If
+ * copy_file_range(2) stops part-way, the read/write tier resumes from where it
+ * stopped.
+ *
+ * The clone and copy_file_range(2) tiers do not move the file offsets of
+ * @p src_fd or @p dst_fd; the read/write tier does.
+ *
+ * A regular destination that was longer than the source is truncated to the
+ * source size, so on success it is identical to the source.
+ *
+ * @param[in] src_fd
+ *   Source file.
+ * @param[in] dst_fd
+ *   Destination file.
+ * @param[in] tiers
+ *   Non-empty mask of #QTM_TIER_CLONE, #QTM_TIER_CFR and #QTM_TIER_RW.
+ * @param[in] rw_block_size
+ *   Block size for the read/write tier. Must be larger than zero if
+ *   @p tiers contains #QTM_TIER_RW, otherwise ignored.
+ * @param[out] p_tier_used
+ *   Optional (may be NULL). On success, set to the mask of tiers that copied
+ *   data: a single tier, or @c QTM_TIER_CFR|QTM_TIER_RW if copy_file_range(2)
+ *   stopped part-way and read/write finished the copy.
+ * @return
+ *   Zero on success. Some non-zero errno value on failure: the error from the
+ *   last tier attempted, or EINVAL if @p tiers is empty or contains unknown
+ *   bits. See #qtm_clone_file() for the possible values.
+ */
+
+int qtm_clone_file_ex (const int         src_fd,
+                       const int         dst_fd,
+                       const qtm_tier_t  tiers,
+                       const size_t      rw_block_size,
+                       qtm_tier_t       *p_tier_used);
+
+/*============================================================================*/
+
+/**
+ * Copy a range from the file @p src_fd into @p dst_fd using the first tier in
+ * @p tiers that succeeds. Tier semantics are as for #qtm_clone_file_ex().
+ *
+ * @param[in] src_fd
+ *   Source file.
+ * @param[in] dst_fd
+ *   Destination file.
+ * @param[in] src_offset
+ *   Offset into @p src_fd to begin the copy.
+ * @param[in] dst_offset
+ *   Offset into @p dst_fd to stitch the copied data.
+ * @param[in] length
+ *   Number of bytes to copy. Zero to copy to the end of @p src_fd. ERANGE is
+ *   returned by the copy_file_range(2) and read/write tiers if @p src_fd ends
+ *   before @p length bytes were copied.
+ * @param[in] tiers
+ *   Non-empty mask of #QTM_TIER_CLONE, #QTM_TIER_CFR and #QTM_TIER_RW.
+ * @param[in] rw_block_size
+ *   Block size for the read/write tier. Must be larger than zero if
+ *   @p tiers contains #QTM_TIER_RW, otherwise ignored.
+ * @param[out] p_tier_used
+ *   Optional (may be NULL). See #qtm_clone_file_ex().
+ * @return
+ *   Zero on success. Some non-zero errno value on failure. See
+ *   #qtm_clone_file_range() for the possible values.
+ */
+
+int qtm_clone_file_range_ex (const int         src_fd,
+                             const int         dst_fd,
+                             const off_t       src_offset,
+                             const off_t       dst_offset,
+                             const size_t      length,
+                             const qtm_tier_t  tiers,
+                             const size_t      rw_block_size,
+                             qtm_tier_t       *p_tier_used);
 
 /*============================================================================*/
 

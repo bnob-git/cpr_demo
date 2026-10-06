@@ -31,10 +31,29 @@ LIBTARGET_OBJS = $(LIBTARGET_SRCS:.c=.o)
 .phony: all
 all: $(LIBTARGET) $(TARGET)
 
+TEST_BINS := tests/test_tiers tests/test_cfr_faults
+
 .phony: clean
 clean:
 	$(RM) $(TARGET_OBJS) $(LIBTARGET_OBJS)
 	$(RM) $(TARGET) $(LIBTARGET)
+	$(RM) $(TEST_BINS)
+
+.phony: test
+test: $(TARGET) $(TEST_BINS)
+	./tests/run_tests.sh
+
+# Also exercises the reflink tier using loopback xfs/ext4 mounts. Needs root
+# or passwordless sudo.
+.phony: test-loopback
+test-loopback: $(TARGET) $(TEST_BINS)
+	./tests/loopback.sh
+
+tests/test_tiers: tests/test_tiers.c tests/test_util.h $(LIBTARGET)
+	$(CC) $(CFLAGS) -I. -o $@ $< $(LIBTARGET)
+
+tests/test_cfr_faults: tests/test_cfr_faults.c tests/test_util.h $(LIBTARGET)
+	$(CC) $(CFLAGS) -I. -o $@ $< $(LIBTARGET) -Wl,--wrap=copy_file_range
 
 $(TARGET): $(TARGET_OBJS) $(LIBTARGET)
 	$(CC) -o $@ $^
