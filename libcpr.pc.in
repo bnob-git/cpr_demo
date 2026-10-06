@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+exec_prefix=@EXEC_PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: libcpr
+Description: FICLONE/FICLONERANGE reflink library with read/write fallback
+Version: @VERSION@
+Libs: -L${libdir} -lcpr
+Cflags: -I${includedir}

@@ -41,6 +41,9 @@
  * will work on any two file handles that can be seeked, read and written.
  */
 
+#ifndef LIBCPR_H
+#define LIBCPR_H
+
 #include <sys/types.h>
 #include <stdbool.h>
 
@@ -177,3 +180,4 @@ int qtm_clone_file_range (const int    src_fd,
 }
 #endif
 
+#endif /* LIBCPR_H */
