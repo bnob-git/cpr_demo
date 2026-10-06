@@ -649,9 +649,10 @@ int main (int argc, char **argv)
 
   int rc = open_files(&operation);
 
+  qtm_tier_t tier_used = QTM_TIER_NONE;
+
   if (rc == 0)
   {
-    qtm_tier_t tier_used = QTM_TIER_NONE;
 
     switch (operation.clone_mode)
     {
@@ -674,18 +675,10 @@ int main (int argc, char **argv)
       }
     }
 
-    if (operation.verbose)
+    if (rc != 0 && operation.verbose)
     {
-      if (rc == 0)
-      {
-        fprintf(stderr, "tier: %s\n", tiers_to_string(tier_used));
-      }
-      else
-      {
-        fprintf(stderr, "Failed to copy \"%s\" to \"%s\": %s\n",
-                operation.src_filename, operation.dst_filename,
-                strerror(rc));
-      }
+      fprintf(stderr, "Failed to copy \"%s\" to \"%s\": %s\n",
+              operation.src_filename, operation.dst_filename, strerror(rc));
     }
   }
 
@@ -713,6 +706,11 @@ int main (int argc, char **argv)
   {
     fprintf(stderr, "W: Error closing files: %s.\n", strerror(close_rc));
     rc = (rc == 0) ? close_rc : rc;
+  }
+
+  if (rc == 0 && operation.verbose)
+  {
+    fprintf(stderr, "tier: %s\n", tiers_to_string(tier_used));
   }
 
   return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

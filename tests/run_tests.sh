@@ -60,9 +60,17 @@ expect_tier () {
   fi
 }
 
+# Kernels without copy_file_range (or file systems refusing it) use rw.
+cfr=cfr
+if ! "$cpr" -T cfr "$src" "$dst.probe" 2>/dev/null; then
+  echo "  copy_file_range unavailable here: expecting rw instead"
+  cfr=rw
+fi
+rm -f "$dst.probe"
+
 expect_tier rw  -T rw
-expect_tier cfr -T cfr
-expect_tier cfr -T cfr,rw
+[ "$cfr" = cfr ] && expect_tier cfr -T cfr
+expect_tier "$cfr" -T cfr,rw
 expect_tier rw  -s 0 -T rw
 
 if "$cpr" -T bogus "$src" "$dst.x" 2>/dev/null; then
@@ -77,7 +85,7 @@ if [ -n "$CPR_TEST_REFLINK_DIR" ]; then
   dst="$CPR_TEST_REFLINK_DIR/cli_dst"
   head -c 1000000 /dev/urandom > "$src"
   expect_tier clone -c
-  expect_tier cfr   -T cfr,rw
+  expect_tier "$cfr" -T cfr,rw
 fi
 
 echo "cli: $failures failures"

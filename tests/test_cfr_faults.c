@@ -26,8 +26,35 @@ typedef enum
 static fault_t g_fault = FAULT_NONE;
 static int     g_calls = 0;
 
-ssize_t __real_copy_file_range (int, off64_t *, int, off64_t *, size_t,
-                                unsigned int);
+/**
+ * Stand-in for the kernel's copy_file_range(2) so these tests do not depend on
+ * kernel support. Copies at most one 64 KiB chunk per call.
+ */
+
+static ssize_t emulate_copy_file_range (int src_fd, off64_t *p_src_off,
+                                        int dst_fd, off64_t *p_dst_off,
+                                        size_t len)
+{
+  static uint8_t buf[65536];
+
+  const ssize_t n = pread(src_fd, buf, len < sizeof(buf) ? len : sizeof(buf),
+                          *p_src_off);
+
+  if (n <= 0)
+  {
+    return n;
+  }
+
+  const ssize_t w = pwrite(dst_fd, buf, (size_t)n, *p_dst_off);
+
+  if (w > 0)
+  {
+    *p_src_off += w;
+    *p_dst_off += w;
+  }
+
+  return w;
+}
 
 ssize_t __wrap_copy_file_range (int src_fd, off64_t *p_src_off, int dst_fd,
                                 off64_t *p_dst_off, size_t len,
@@ -69,8 +96,9 @@ ssize_t __wrap_copy_file_range (int src_fd, off64_t *p_src_off, int dst_fd,
       return 0;
   }
 
-  return __real_copy_file_range(src_fd, p_src_off, dst_fd, p_dst_off, len,
-                                flags);
+  (void)flags;
+
+  return emulate_copy_file_range(src_fd, p_src_off, dst_fd, p_dst_off, len);
 }
 
 /*============================================================================*/

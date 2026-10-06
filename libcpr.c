@@ -426,6 +426,34 @@ static int cfr_copy_range_impl (const int    src_fd,
 /*============================================================================*/
 
 /**
+ * After a whole-file copy, shrink a longer pre-existing regular destination to
+ * the source size. None of the tiers do that by themselves (FICLONE of an
+ * empty source is a no-op).
+ */
+
+static int truncate_dst_to_src (const int src_fd, const int dst_fd)
+{
+  struct stat src_stat;
+  struct stat dst_stat;
+
+  if (fstat(src_fd, &src_stat) != 0 || fstat(dst_fd, &dst_stat) != 0)
+  {
+    return errno;
+  }
+
+  if (S_ISREG(src_stat.st_mode) && S_ISREG(dst_stat.st_mode) &&
+      dst_stat.st_size > src_stat.st_size &&
+      ftruncate(dst_fd, src_stat.st_size) != 0)
+  {
+    return errno;
+  }
+
+  return 0;
+}
+
+/*============================================================================*/
+
+/**
  * Copy from @p src_fd into @p dst_fd, trying each tier in @p tiers in order.
  * See qtm_clone_file_ex() for the semantics.
  */
@@ -507,6 +535,11 @@ static int copy_with_tiers (const int    src_fd,
     {
       used |= QTM_TIER_RW;
     }
+  }
+
+  if (rc == 0 && whole_file)
+  {
+    rc = truncate_dst_to_src(src_fd, dst_fd);
   }
 
   if (rc == 0 && p_tier_used != NULL)

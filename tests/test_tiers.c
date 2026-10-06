@@ -15,13 +15,24 @@
 
 /*============================================================================*/
 
-/** Copy the whole of @p src into a fresh @p dst using @p tiers. */
+/**
+ * copy_file_range(2) result on the scratch file system, probed in main(). Old
+ * kernels (ENOSYS) or file systems without support (EOPNOTSUPP) are allowed;
+ * there the CFR-only checks expect that error and the chain expects RW.
+ */
 
-static int copy_whole (const char *src, const char *dst,
-                       const qtm_tier_t tiers, qtm_tier_t *p_used)
+static int g_cfr_rc = 0;
+
+#define CFR_OR_RW (g_cfr_rc == 0 ? QTM_TIER_CFR : QTM_TIER_RW)
+
+/*============================================================================*/
+
+static int copy_whole_impl (const char *src, const char *dst,
+                            const qtm_tier_t tiers, qtm_tier_t *p_used,
+                            const bool truncate)
 {
   int src_fd = open_src(src);
-  int dst_fd = open_dst(dst);
+  int dst_fd = truncate ? open_dst(dst) : open(dst, O_WRONLY | O_CREAT, 0644);
 
   *p_used = QTM_TIER_NONE;
 
@@ -31,6 +42,22 @@ static int copy_whole (const char *src, const char *dst,
   close(dst_fd);
 
   return rc;
+}
+
+/** Copy the whole of @p src into a fresh @p dst using @p tiers. */
+
+static int copy_whole (const char *src, const char *dst,
+                       const qtm_tier_t tiers, qtm_tier_t *p_used)
+{
+  return copy_whole_impl(src, dst, tiers, p_used, true);
+}
+
+/** Copy the whole of @p src over an existing @p dst without O_TRUNC. */
+
+static int copy_whole_keep (const char *src, const char *dst,
+                            const qtm_tier_t tiers, qtm_tier_t *p_used)
+{
+  return copy_whole_impl(src, dst, tiers, p_used, false);
 }
 
 /*============================================================================*/
@@ -113,9 +140,13 @@ static void test_whole_file (const char *dir, const bool reflink_expected)
   /* Tier 2: copy_file_range only. Same-FS copy_file_range works on Linux >=
    * 5.3 for all local file systems.
    */
-  CHECK_RC(copy_whole(src, dst, QTM_TIER_CFR, &used), 0);
-  CHECK(used == QTM_TIER_CFR);
-  CHECK(files_equal(src, dst));
+  CHECK_RC(copy_whole(src, dst, QTM_TIER_CFR, &used), g_cfr_rc);
+
+  if (g_cfr_rc == 0)
+  {
+    CHECK(used == QTM_TIER_CFR);
+    CHECK(files_equal(src, dst));
+  }
 
   /* Tier 3: read/write only. */
   CHECK_RC(copy_whole(src, dst, QTM_TIER_RW, &used), 0);
@@ -124,7 +155,7 @@ static void test_whole_file (const char *dir, const bool reflink_expected)
 
   /* Full chain: clone if it works, otherwise copy_file_range. */
   CHECK_RC(copy_whole(src, dst, QTM_TIER_ALL, &used), 0);
-  CHECK(used == (clone_ok ? QTM_TIER_CLONE : QTM_TIER_CFR));
+  CHECK(used == (clone_ok ? QTM_TIER_CLONE : CFR_OR_RW));
   CHECK(files_equal(src, dst));
 
   /* copy_file_range disabled: skip straight to read/write. */
@@ -134,7 +165,7 @@ static void test_whole_file (const char *dir, const bool reflink_expected)
 
   /* Clone disabled. */
   CHECK_RC(copy_whole(src, dst, QTM_TIER_CFR | QTM_TIER_RW, &used), 0);
-  CHECK(used == QTM_TIER_CFR);
+  CHECK(used == CFR_OR_RW);
   CHECK(files_equal(src, dst));
 
   /* Legacy API: fallback runs the full chain, no fallback is clone only. */
@@ -146,22 +177,38 @@ static void test_whole_file (const char *dir, const bool reflink_expected)
   CHECK_RC(qtm_clone_file(src_fd, dst_fd, false, 0), clone_rc);
 
   /* The clone and copy_file_range tiers leave the file offsets alone. */
-  CHECK(lseek(src_fd, 0, SEEK_CUR) == 0);
-  CHECK(lseek(dst_fd, 0, SEEK_CUR) == 0);
+  if (clone_ok || g_cfr_rc == 0)
+  {
+    CHECK(lseek(src_fd, 0, SEEK_CUR) == 0);
+    CHECK(lseek(dst_fd, 0, SEEK_CUR) == 0);
+  }
 
   close(src_fd);
   close(dst_fd);
 
-  /* Empty source. */
-  CHECK(write_pattern_file(src, 0, 3) == 0);
-
+  /* A longer existing destination (opened without O_TRUNC) ends up identical
+   * to the source, also with an empty source. FICLONE alone refuses this for
+   * unaligned source sizes (EINVAL), so it is only covered through the chain.
+   */
   const qtm_tier_t singles[] = { QTM_TIER_CFR, QTM_TIER_RW, QTM_TIER_ALL };
+  const size_t     src_lens[] = { FILE_LEN, 0 };
 
-  for (size_t i = 0; i < sizeof(singles) / sizeof(singles[0]); i++)
+  for (size_t j = 0; j < sizeof(src_lens) / sizeof(src_lens[0]); j++)
   {
-    CHECK(write_pattern_file(dst, 100, 4) == 0);
-    CHECK_RC(copy_whole(src, dst, singles[i], &used), 0);
-    CHECK(files_equal(src, dst));
+    CHECK(write_pattern_file(src, src_lens[j], 3) == 0);
+
+    for (size_t i = 0; i < sizeof(singles) / sizeof(singles[0]); i++)
+    {
+      const int want = (singles[i] == QTM_TIER_CFR) ? g_cfr_rc : 0;
+
+      CHECK(write_pattern_file(dst, FILE_LEN * 2, 4) == 0);
+      CHECK_RC(copy_whole_keep(src, dst, singles[i], &used), want);
+
+      if (want == 0)
+      {
+        CHECK(files_equal(src, dst));
+      }
+    }
   }
 }
 
@@ -181,7 +228,8 @@ static void test_ranges (const char *dir)
   const qtm_tier_t tiers[] = { QTM_TIER_CFR, QTM_TIER_RW,
                                QTM_TIER_CFR | QTM_TIER_RW };
 
-  for (size_t i = 0; i < sizeof(tiers) / sizeof(tiers[0]); i++)
+  for (size_t i = (g_cfr_rc == 0) ? 0 : 1;
+       i < sizeof(tiers) / sizeof(tiers[0]); i++)
   {
     const off_t  src_off = 1000;
     const off_t  dst_off = 5000;
@@ -195,7 +243,7 @@ static void test_ranges (const char *dir)
 
     CHECK_RC(qtm_clone_file_range_ex(src_fd, dst_fd, src_off, dst_off, len,
                                      tiers[i], RW_BLOCK_SIZE, &used), 0);
-    CHECK(used == (tiers[i] & QTM_TIER_CFR ? QTM_TIER_CFR : QTM_TIER_RW));
+    CHECK(used == (tiers[i] & QTM_TIER_CFR ? CFR_OR_RW : QTM_TIER_RW));
 
     size_t   s_len = 0;
     size_t   d_len = 0;
@@ -220,7 +268,7 @@ static void test_ranges (const char *dir)
     /* Length zero copies to the end of the source. */
     CHECK_RC(qtm_clone_file_range_ex(src_fd, dst_fd, 4096, 0, 0, tiers[i],
                                      RW_BLOCK_SIZE, &used), 0);
-    CHECK(used == (tiers[i] & QTM_TIER_CFR ? QTM_TIER_CFR : QTM_TIER_RW));
+    CHECK(used == (tiers[i] & QTM_TIER_CFR ? CFR_OR_RW : QTM_TIER_RW));
 
     struct stat st;
     CHECK(fstat(dst_fd, &st) == 0 &&
@@ -256,7 +304,7 @@ static void test_cross_fs (const char *dir, const char *xdev_dir)
    */
   const int cfr_rc = copy_whole(src, dst, QTM_TIER_CFR, &used);
 
-  CHECK(cfr_rc == 0 || cfr_rc == EXDEV);
+  CHECK(cfr_rc == 0 || cfr_rc == EXDEV || cfr_rc == g_cfr_rc);
   printf("  cross-fs: cfr tier %s\n", cfr_rc ? strerror(cfr_rc) : "supported");
 
   CHECK_RC(copy_whole(src, dst, QTM_TIER_ALL, &used), 0);
@@ -293,7 +341,7 @@ static void test_reflink_range (const char *dir)
   /* Unaligned: FICLONERANGE fails with EINVAL, copy_file_range takes over. */
   CHECK_RC(qtm_clone_file_range_ex(src_fd, dst_fd, 1, 3, 1000, QTM_TIER_ALL,
                                    RW_BLOCK_SIZE, &used), 0);
-  CHECK(used == QTM_TIER_CFR);
+  CHECK(used == CFR_OR_RW);
 
   close(src_fd);
   close(dst_fd);
@@ -332,6 +380,22 @@ int main (void)
   {
     fprintf(stderr, "CPR_TEST_DIR must be set.\n");
     return EXIT_FAILURE;
+  }
+
+  char       probe_src[PATH_MAX];
+  char       probe_dst[PATH_MAX];
+  qtm_tier_t used = QTM_TIER_NONE;
+
+  join_path(probe_src, dir, "probe_src");
+  join_path(probe_dst, dir, "probe_dst");
+  CHECK(write_pattern_file(probe_src, 4096, 0) == 0);
+  g_cfr_rc = copy_whole(probe_src, probe_dst, QTM_TIER_CFR, &used);
+  CHECK(g_cfr_rc == 0 || g_cfr_rc == ENOSYS || g_cfr_rc == EOPNOTSUPP);
+
+  if (g_cfr_rc != 0)
+  {
+    printf("  copy_file_range unavailable (%s): expecting rw instead\n",
+           strerror(g_cfr_rc));
   }
 
   test_validation(dir);

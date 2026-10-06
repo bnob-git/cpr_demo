@@ -223,6 +223,9 @@ int qtm_clone_file_range (const int    src_fd,
  * The clone and copy_file_range(2) tiers do not move the file offsets of
  * @p src_fd or @p dst_fd; the read/write tier does.
  *
+ * A regular destination that was longer than the source is truncated to the
+ * source size, so on success it is identical to the source.
+ *
  * @param[in] src_fd
  *   Source file.
  * @param[in] dst_fd
