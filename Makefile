@@ -88,12 +88,15 @@ $(SONAME): $(SHAREDLIB_REAL)
 $(SHAREDLIB): $(SONAME)
 	$(LN_S) $< $@
 
+# Escape \ & | and ' for a single-quoted sed replacement.
+sed_repl = $(subst ','\'',$(subst |,\|,$(subst &,\&,$(subst \,\\,$(1)))))
+
 # Regenerated on every run, but only rewritten when PREFIX/LIBDIR/etc. change.
 $(PCFILE): $(PCFILE).in FORCE
-	@sed -e 's|@PREFIX@|$(PREFIX)|g' \
-	     -e 's|@EXEC_PREFIX@|$(EXEC_PREFIX)|g' \
-	     -e 's|@LIBDIR@|$(LIBDIR)|g' \
-	     -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|g' \
+	@sed -e 's|@PREFIX@|$(call sed_repl,$(PREFIX))|g' \
+	     -e 's|@EXEC_PREFIX@|$(call sed_repl,$(EXEC_PREFIX))|g' \
+	     -e 's|@LIBDIR@|$(call sed_repl,$(LIBDIR))|g' \
+	     -e 's|@INCLUDEDIR@|$(call sed_repl,$(INCLUDEDIR))|g' \
 	     -e 's|@VERSION@|$(VERSION)|g' \
 	     $< > $@.tmp
 	@if cmp -s $@.tmp $@; then $(RM) $@.tmp; \
@@ -121,7 +124,7 @@ uninstall:
 
 clean:
 	$(RM) $(TARGET_OBJS) $(LIBTARGET_OBJS) $(DEPS)
-	$(RM) $(TARGET) $(STATICLIB) $(SHAREDLIB) $(SONAME) $(SHAREDLIB_REAL)
+	$(RM) $(TARGET) $(STATICLIB) $(SHAREDLIB) $(SHAREDLIB).*
 	$(RM) $(PCFILE) $(PCFILE).tmp
 
 -include $(DEPS)
