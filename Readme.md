@@ -36,6 +36,18 @@ requrements and the program should build.
 If the C11 compiler is not the first in your path, or not in your path, then
 set the CC variable to point at it. e.g. 'make CC=/path/to/c11'.
 
+TESTING
+=======
+
+'make test' builds tests/test_libcpr and runs it together with the cpr CLI
+tests in tests/. With root or passwordless sudo it mounts tmpfs plus ext4,
+btrfs and xfs (reflink=1) loopback images so both the FICLONE/FICLONERANGE
+and the read(2)/write(2) fallback paths are exercised; otherwise only the
+fallback tests run and the rest are reported as SKIP.
+
+'make coverage' additionally fails if gcov branch coverage of libcpr.c is
+below COVERAGE_MIN (default 80).
+
 COPYRIGHT
 =========
 
