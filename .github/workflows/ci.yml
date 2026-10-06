@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compiler version
+        run: ${{ matrix.cc }} --version
+
+      - name: Build libcpr.a and cpr (-Wall -Wextra -Werror -pedantic)
+        run: make CC=${{ matrix.cc }} WERROR=1
+
+      - name: Check artifacts
+        run: test -f libcpr.a && test -x cpr
+
+      - name: Smoke test (read/write fallback copy)
+        run: |
+          head -c 1048576 /dev/urandom > "$RUNNER_TEMP/src"
+          ./cpr -c "$RUNNER_TEMP/src" "$RUNNER_TEMP/dst"
+          cmp "$RUNNER_TEMP/src" "$RUNNER_TEMP/dst"

@@ -20,6 +20,12 @@
 
 CFLAGS := -D_GNU_SOURCE=1 -std=c11
 
+WARNFLAGS ?= -Wall -Wextra -pedantic
+ifeq ($(WERROR),1)
+WARNFLAGS += -Werror
+endif
+CFLAGS += $(WARNFLAGS)
+
 TARGET := cpr
 TARGET_SRCS := cpr.c
 TARGET_OBJS = $(TARGET_SRCS:.c=.o)
