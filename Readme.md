@@ -36,6 +36,32 @@ requrements and the program should build.
 If the C11 compiler is not the first in your path, or not in your path, then
 set the CC variable to point at it. e.g. 'make CC=/path/to/c11'.
 
+The build produces the cpr program, the static library libcpr.a, the shared
+library libcpr.so.1 (with libcpr.so development symlink) and a pkg-config file
+libcpr.pc. Build with 'make DEBUG=1' for an unoptimised build with debug info
+(run 'make clean' first when switching between debug and release builds).
+Extra compiler flags can be passed via CFLAGS, CPPFLAGS and LDFLAGS.
+
+INSTALLING
+==========
+
+'make install' installs into PREFIX (default /usr/local):
+
+    $(PREFIX)/bin/cpr
+    $(PREFIX)/include/libcpr.h
+    $(PREFIX)/lib/libcpr.a, libcpr.so*
+    $(PREFIX)/lib/pkgconfig/libcpr.pc
+
+BINDIR, LIBDIR, INCLUDEDIR and PKGCONFIGDIR can be overridden individually, and
+DESTDIR is honoured for staged installs, e.g.
+
+    make
+    sudo make install PREFIX=/usr DESTDIR=/tmp/stage
+
+'make uninstall' (with the same PREFIX/DESTDIR) removes the installed files.
+Consumers can then build against libcpr with
+'pkg-config --cflags --libs libcpr'.
+
 COPYRIGHT
 =========
 
