@@ -28,16 +28,50 @@ LIBTARGET := libcpr.a
 LIBTARGET_SRCS := libcpr.c
 LIBTARGET_OBJS = $(LIBTARGET_SRCS:.c=.o)
 
-.phony: all
+TEST_DIR   := tests
+TEST_BUILD := $(TEST_DIR)/build
+TEST_BIN   := $(TEST_BUILD)/test_libcpr
+
+# The test binary wraps read()/write() to inject EINTR, short writes and I/O
+# errors into the fallback copy loop. Set TEST_COVERAGE_FLAGS= to build the
+# tests without gcov instrumentation (e.g. with clang).
+TEST_COVERAGE_FLAGS ?= --coverage
+TEST_LDFLAGS        := -Wl,--wrap=read,--wrap=write
+COVERAGE_MIN        ?= 80
+GCOV                ?= gcov
+
+.PHONY: all
 all: $(LIBTARGET) $(TARGET)
 
-.phony: clean
+.PHONY: clean
 clean:
 	$(RM) $(TARGET_OBJS) $(LIBTARGET_OBJS)
 	$(RM) $(TARGET) $(LIBTARGET)
+	$(RM) -r $(TEST_BUILD)
+
+.PHONY: test
+test: $(TARGET) $(TEST_BIN)
+	$(RM) $(TEST_BUILD)/*.gcda
+	$(TEST_DIR)/run_tests.sh $(TEST_BIN) ./$(TARGET)
+
+.PHONY: coverage
+coverage: test
+	GCOV=$(GCOV) $(TEST_DIR)/coverage.sh $(TEST_BUILD) $(COVERAGE_MIN)
 
 $(TARGET): $(TARGET_OBJS) $(LIBTARGET)
 	$(CC) -o $@ $^
 
 $(LIBTARGET): $(LIBTARGET_OBJS)
 	$(AR) cr $@ $^
+
+$(TEST_BUILD):
+	mkdir -p $@
+
+$(TEST_BUILD)/libcpr.o: libcpr.c libcpr.h | $(TEST_BUILD)
+	$(CC) $(CFLAGS) -O0 $(TEST_COVERAGE_FLAGS) -c -o $@ libcpr.c
+
+$(TEST_BUILD)/test_libcpr.o: $(TEST_DIR)/test_libcpr.c libcpr.h | $(TEST_BUILD)
+	$(CC) $(CFLAGS) -I. -c -o $@ $(TEST_DIR)/test_libcpr.c
+
+$(TEST_BIN): $(TEST_BUILD)/test_libcpr.o $(TEST_BUILD)/libcpr.o
+	$(CC) -o $@ $^ $(TEST_COVERAGE_FLAGS) $(TEST_LDFLAGS)

@@ -147,21 +147,15 @@ static int clone_file_impl (const int src_fd, const int dst_fd)
 
 static int seek_file (const int fd, const off_t offset)
 {
-  int rc = lseek(fd, offset, SEEK_SET);
-
-  if (rc == -1)
+  /* lseek() returns the new offset as an off_t; storing it in an int would
+   * truncate offsets >= 2GiB into bogus error codes.
+   */
+  if (lseek(fd, offset, SEEK_SET) == (off_t)-1)
   {
-    rc = errno;
-  }
-  else if (rc > 0)
-  {
-    /* lseek() returns the current offset on success. We want to return zero
-     * on success.
-     */
-    rc = 0;
+    return errno;
   }
 
-  return rc;
+  return 0;
 }
 
 /*============================================================================*/

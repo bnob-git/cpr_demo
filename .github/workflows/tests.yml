@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: make ${{ matrix.target }} (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            target: coverage
+          - cc: clang
+            target: test
+    env:
+      # Fail rather than skip if root or a loopback FS is unavailable.
+      CPR_TEST_STRICT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install filesystem tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs xfsprogs e2fsprogs
+
+      - name: Run tests
+        run: make CC=${{ matrix.cc }} ${{ matrix.target }}
