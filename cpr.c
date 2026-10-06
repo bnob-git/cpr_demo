@@ -31,8 +31,8 @@
  * kernel code paths.
  *
  * If the kernel does not provide either of these IOCTLs then it's possible
- * for the user to request that an old-fashioned read()/write() deep-copy be
- * performed instead.
+ * for the user to request that a copy_file_range(2) copy and then an
+ * old-fashioned read()/write() deep-copy be performed instead.
  */
 
 #include "libcpr.h"
@@ -96,6 +96,8 @@ typedef struct _operation_t
    * @{
    */
   bool            fallback_copy;
+  qtm_tier_t      tiers;
+  bool            verbose;
   size_t          block_size;
   const char     *src_filename;
   const char     *dst_filename;
@@ -171,15 +173,16 @@ static void print_usage_and_exit (const char *argv0, const char *fmt, ...)
   }
 
   fprintf(stderr,
-          "USAGE: %s [-?] [-aotp] [-f] [-c] <SRC_FILE> <DST_FILE>             (1)\n"
-          "       %s [-s SRC_OFFSET] [-d DST_OFFSET] [-l LENGTH] [-aotp] [-c] (2)\n"
-          "          <SRC_FILE> <DST_FILE>\n"
+          "USAGE: %s [-?] [-aotp] [-f] [-c | -T TIERS] [-v] <SRC_FILE> <DST_FILE> (1)\n"
+          "       %s [-s SRC_OFFSET] [-d DST_OFFSET] [-l LENGTH] [-aotp]\n"
+          "          [-c | -T TIERS] [-v] <SRC_FILE> <DST_FILE>                   (2)\n"
           "\n"
           "WHERE:\n"
           "  SRC_FILE    Input filename.\n"
           "  DST_FILE    Output filename.\n"
           "  -a          Equivalent to -otp.\n"
-          "  -c          Fall back to copy read/write copy if FICLONE fails.\n"
+          "  -c          Fall back to copy_file_range(2) and then a read/write\n"
+          "              copy if FICLONE fails. Equivalent to -T clone,cfr,rw.\n"
           "  -d          Offset into destination file to begin stitching.\n"
           "              Defaults to zero (beginning) if omitted.\n"
           "  -l          Length to copy. Defaults to zero (copy to end of\n"
@@ -191,6 +194,11 @@ static void print_usage_and_exit (const char *argv0, const char *fmt, ...)
           "              are supplied.\n"
           "  -s          Offset into source file to begin copying from.\n"
           "              Defaults to zero (beginning) if omitted.\n"
+          "  -T          Comma-separated copy tiers to allow, tried in the\n"
+          "              order clone (FICLONE/FICLONERANGE), cfr\n"
+          "              (copy_file_range) and rw (read/write). 'all' is\n"
+          "              clone,cfr,rw. Defaults to clone (or all with -c).\n"
+          "  -v          Print the tier(s) used, or the error, to stderr.\n"
           "  -?          Display this help text.\n"
           "\n"
           "USAGE (1) will stitch the whole of SRC_FILE into DST_FILE, making\n"
@@ -259,6 +267,78 @@ static uint64_t parse_uint64 (const char *argvN,
 /*============================================================================*/
 
 /**
+ * Parse a comma-separated list of tier names in @p argvN. Calls
+ * print_usage_and_exit() if any name is not recognised.
+ */
+
+static qtm_tier_t parse_tiers (const char *argvN, const char *argv0)
+{
+  static const struct
+  {
+    const char *name;
+    qtm_tier_t  tier;
+  } tier_names[] =
+  {
+    { "clone", QTM_TIER_CLONE },
+    { "cfr",   QTM_TIER_CFR   },
+    { "rw",    QTM_TIER_RW    },
+    { "all",   QTM_TIER_ALL   },
+  };
+
+  qtm_tier_t  tiers = QTM_TIER_NONE;
+  const char *p     = argvN;
+
+  for (;;)
+  {
+    const size_t len   = strcspn(p, ",");
+    bool         found = false;
+
+    for (size_t i = 0; i < sizeof(tier_names) / sizeof(tier_names[0]); i++)
+    {
+      if (strlen(tier_names[i].name) == len &&
+          strncmp(tier_names[i].name, p, len) == 0)
+      {
+        tiers |= tier_names[i].tier;
+        found  = true;
+        break;
+      }
+    }
+
+    if (!found)
+    {
+      print_usage_and_exit(argv0, "Unknown tier in TIERS \"%s\".", argvN);
+    }
+
+    if (p[len] == '\0')
+    {
+      break;
+    }
+
+    p += len + 1;
+  }
+
+  return tiers;
+}
+
+/*============================================================================*/
+
+/** Format the tier mask @p tiers as a human-readable string. */
+
+static const char *tiers_to_string (const qtm_tier_t tiers)
+{
+  switch (tiers)
+  {
+    case QTM_TIER_CLONE:              return "clone";
+    case QTM_TIER_CFR:                return "cfr";
+    case QTM_TIER_RW:                 return "rw";
+    case QTM_TIER_CFR | QTM_TIER_RW:  return "cfr+rw";
+    default:                          return "none";
+  }
+}
+
+/*============================================================================*/
+
+/**
  * Parse the command-line options and fill in @p p_operation. Calls
  * print_usage_and_exit() if any errors are detected.
  */
@@ -269,7 +349,7 @@ static void parse_options (int argc, char **argv, operation_t *p_operation)
 
   for (;;)
   {
-    int opt = getopt(argc, argv, "acd:fl:ops:t");
+    int opt = getopt(argc, argv, "acd:fl:ops:tT:v");
 
     if (opt == -1)
     {
@@ -338,6 +418,18 @@ static void parse_options (int argc, char **argv, operation_t *p_operation)
         break;
       }
 
+      case 'T':
+      {
+        p_operation->tiers = parse_tiers(optarg, argv[0]);
+        break;
+      }
+
+      case 'v':
+      {
+        p_operation->verbose = true;
+        break;
+      }
+
       case '?':
       {
         print_usage_and_exit(argv[0], NULL);
@@ -366,6 +458,12 @@ static void parse_options (int argc, char **argv, operation_t *p_operation)
   if (p_operation->dst_filename == NULL || p_operation->dst_filename[0] == '\0')
   {
     print_usage_and_exit(argv[0], "Destination filename is an empty string.");
+  }
+
+  if (p_operation->tiers == QTM_TIER_NONE)
+  {
+    p_operation->tiers =
+      p_operation->fallback_copy ? QTM_TIER_ALL : QTM_TIER_CLONE;
   }
 }
 
@@ -532,6 +630,8 @@ int main (int argc, char **argv)
   operation_t operation =
   {
     .fallback_copy = false,
+    .tiers         = QTM_TIER_NONE,
+    .verbose       = false,
     .block_size    = 8192,
     .src_filename  = NULL,
     .dst_filename  = NULL,
@@ -551,22 +651,40 @@ int main (int argc, char **argv)
 
   if (rc == 0)
   {
+    qtm_tier_t tier_used = QTM_TIER_NONE;
+
     switch (operation.clone_mode)
     {
       case CLONE_MODE_FILE:
       {
-        rc = qtm_clone_file(operation.src_fd, operation.dst_fd,
-                            operation.fallback_copy, operation.block_size);
+        rc = qtm_clone_file_ex(operation.src_fd, operation.dst_fd,
+                               operation.tiers, operation.block_size,
+                               &tier_used);
         break;
       }
 
       case CLONE_MODE_RANGE:
       {
-        rc = qtm_clone_file_range(operation.src_fd, operation.dst_fd,
-                                  operation.src_offset, operation.dst_offset,
-                                  operation.src_length, operation.fallback_copy,
-                                  operation.block_size);
+        rc = qtm_clone_file_range_ex(operation.src_fd, operation.dst_fd,
+                                     operation.src_offset,
+                                     operation.dst_offset,
+                                     operation.src_length, operation.tiers,
+                                     operation.block_size, &tier_used);
         break;
+      }
+    }
+
+    if (operation.verbose)
+    {
+      if (rc == 0)
+      {
+        fprintf(stderr, "tier: %s\n", tiers_to_string(tier_used));
+      }
+      else
+      {
+        fprintf(stderr, "Failed to copy \"%s\" to \"%s\": %s\n",
+                operation.src_filename, operation.dst_filename,
+                strerror(rc));
       }
     }
   }
