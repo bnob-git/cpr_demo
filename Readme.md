@@ -1,3 +1,5 @@
+[![CI](https://github.com/bnob-git/cpr_demo/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/bnob-git/cpr_demo/actions/workflows/ci.yml)
+
 SUMMARY
 =======
 
@@ -35,6 +37,9 @@ requrements and the program should build.
 
 If the C11 compiler is not the first in your path, or not in your path, then
 set the CC variable to point at it. e.g. 'make CC=/path/to/c11'.
+
+The build enables -Wall -Wextra -pedantic by default. Set WERROR=1 to treat
+warnings as errors, as CI does on GCC and Clang. e.g. 'make CC=clang WERROR=1'.
 
 COPYRIGHT
 =========

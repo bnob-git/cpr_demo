@@ -123,19 +123,19 @@ typedef struct _operation_t
  * this program completely self-contained.
  *
  * @param[in] cond_ Assert condition. Fail if false.
- * @param[in] fmt_  Printf-style constant literal format string.
- * @param[in] ...   Arguments to match @p fmt_.
+ * @param[in] ...   Printf-style constant literal format string followed by
+ *                  any arguments to match it.
  */
 
-#define AS(cond_, fmt_, ...)                                     \
+#define AS(cond_, ...)                                           \
   do {                                                           \
     if (!(cond_))                                                \
     {                                                            \
       fprintf(stderr,                                            \
-              "An assertion failed at %s:%d (%s). Details:\n\n"  \
-              fmt_                                               \
-              "\n",                                              \
-              __FILE__, __LINE__, __func__, ##__VA_ARGS__);      \
+              "An assertion failed at %s:%d (%s). Details:\n\n", \
+              __FILE__, __LINE__, __func__);                     \
+      fprintf(stderr, __VA_ARGS__);                              \
+      fputc('\n', stderr);                                       \
       fflush(stderr);                                            \
       abort();                                                   \
     }                                                            \
